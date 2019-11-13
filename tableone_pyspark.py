@@ -1,3 +1,5 @@
+import sys
+
 def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify="", p_values=""):
     """
     tableone
@@ -473,3 +475,7 @@ def p_values_categorical(col_i,initial_df,col_to_strat):
     df_spark = spark.createDataFrame(df)
 
     return df_spark
+
+# Allow function file to be run as a script
+if __name__ == "__main__":
+    tableone_pyspark(sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5])
