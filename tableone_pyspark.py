@@ -1,6 +1,6 @@
 import sys
 
-def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify="", p_values=""):
+def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=False, p_values=False):
     """
     tableone
     tableone creates the “Table 1” summary statistics for a patient population.
@@ -39,9 +39,9 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify="", 
     idx = 0
 
     # Override p_value indicator if no stratification variable so doesnt mess up run
-    if col_to_strat == "" and p_values == "Yes":
-        p_values = "No"
-        print "p_values indicator overrided to 'No' because no stratification variable"
+    if col_to_strat == "" and p_values == True:
+        p_values = False
+        print "p_values indicator overrided to False because no stratification variable"
 
     ########################################################################
     # Only select columns that will be analyzed.
@@ -108,7 +108,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify="", 
             df_all = df_all.withColumn(c + "_%",lit(1))
             
         #Change column order and add columns if finding p values
-        if p_values == "Yes":
+        if p_values == True:
             column_order += ["p_value","test_value","test_name"]
 
             df_all = df_all.withColumn("p_value", lit(None))\
@@ -143,7 +143,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify="", 
                 df_stat = df_stat.withColumn(cat_col + "_%", col(cat_col)/counts_dict[cat_col][0])
 
             #calcualte the p value
-            if p_values == "Yes":
+            if p_values == True:
                 df_p_values = p_values_categorical(col_i,initial_df,col_to_strat)
 
                 #Add 2 columns for a cleaner join
@@ -161,7 +161,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify="", 
             df_stat = analysis_continuous(col_i,initial_df,col_to_strat,idx)     
 
             #calcualte the p value
-            if p_values == "Yes":
+            if p_values == True:
                 df_p_values = p_values_continous(col_i, initial_df, col_to_strat)
 
                 #Add 2 columns for a cleaner join
@@ -203,7 +203,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify="", 
     #3. Replace "_" in "Characteristics" with " "
     #. Multiply percent column by 100 <-- maybe add this in
 
-    if beautify == "Yes":
+    if beautify == True:
         final_df = final_df.drop("Pivoted_column","Variable_type")
 
         #Blank out headings on non heading rows of "Characteristics" and Replace "_" in "Characteristics" with " "
