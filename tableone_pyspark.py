@@ -38,6 +38,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
             2019-11-14 - Charles
                 Changed Yes/No for p_values and beautify to True/False
 
+
     """
 
     # Start order counter
