@@ -35,7 +35,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
                 Repartitioned to 1 after any joins or aggregates (".agg()").
     """
 
-    #Start order counter
+    # Start order counter
     idx = 0
 
     # Override p_value indicator if no stratification variable so doesnt mess up run
