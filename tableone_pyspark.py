@@ -1,5 +1,6 @@
 import sys
 
+
 def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=False, p_values=False):
     """
     tableone
@@ -33,22 +34,25 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
                 Broadcast initial_df to speed up analysis.
                 Imported function from SQL library individually so don't need "F." notation.
                 Repartitioned to 1 after any joins or aggregates (".agg()").
+
+            2019-11-14 - Charles
+                Changed Yes/No for p_values and beautify to True/False
     """
 
     # Start order counter
     idx = 0
 
     # Override p_value indicator if no stratification variable so doesnt mess up run
-    if col_to_strat == "" and p_values == True:
+    if col_to_strat == "" and p_values is True:
         p_values = False
-        print "p_values indicator overrided to False because no stratification variable"
+        print("p_values indicator overridden to False because no stratification variable")
 
     ########################################################################
     # Only select columns that will be analyzed.
     # Change col_to_strat values to be valid as column's name.
     ########################################################################
     if col_to_strat == "":
-         # If there is NOT a stratification variable
+        # If there is NOT a stratification variable
         initial_df = broadcast(df.select(*cols_to_analyze_list))
 
     else:
@@ -107,8 +111,8 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         for c in output_column_names:
             df_all = df_all.withColumn(c + "_%",lit(1))
             
-        #Change column order and add columns if finding p values
-        if p_values == True:
+        # Change column order and add columns if finding p values
+        if p_values is True:
             column_order += ["p_value","test_value","test_name"]
 
             df_all = df_all.withColumn("p_value", lit(None))\
@@ -127,68 +131,68 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
     # Find the number of patients for "All Patients" and in each strat value (used to derive percents later)
     counts_dict = df_all.select(output_column_names).toPandas().to_dict(orient='list')
-    print counts_dict
+    # print counts_dict
 
     # calculate statistics for each cols_to_analyze_list 
     for col_i in cols_to_analyze_list: 
         col_type = initial_df.select(col_i).dtypes[0][1]
 
-        #conduct categorical analysis
+        # conduct categorical analysis
         if col_type == 'string':
 
             df_stat = analysis_categorical(col_i,initial_df,col_to_strat, idx)
 
-            #Find percent for each cols_to_analyze_list
+            # Find percent for each cols_to_analyze_list
             for cat_col in output_column_names:
                 df_stat = df_stat.withColumn(cat_col + "_%", col(cat_col)/counts_dict[cat_col][0])
 
-            #calcualte the p value
-            if p_values == True:
+            # calculate the p value
+            if p_values is True:
                 df_p_values = p_values_categorical(col_i,initial_df,col_to_strat)
 
-                #Add 2 columns for a cleaner join
+                # Add 2 columns for a cleaner join
                 df_p_values = df_p_values.withColumn("Index", lit(idx + 0.01))\
                                          .withColumn("Characteristics",lit(col_i))
 
-                #Something is wrong with Darwin so need to convert back and forth
+                # Something is wrong with Darwin so need to convert back and forth
                 df_p_values = spark.createDataFrame(df_p_values.toPandas())
 
                 df_stat = df_stat.join(df_p_values,["Index","Characteristics"],"left_outer").repartition(1)
 
-        #conduct continous analysis
+        # conduct continuous analysis
         elif col_type in ['int', 'double','float','short', 'long']:
 
             df_stat = analysis_continuous(col_i,initial_df,col_to_strat,idx)     
 
-            #calcualte the p value
-            if p_values == True:
+            # calculate the p value
+            if p_values is True:
                 df_p_values = p_values_continous(col_i, initial_df, col_to_strat)
 
-                #Add 2 columns for a cleaner join
+                # Add 2 columns for a cleaner join
                 df_p_values = df_p_values.withColumn("Index",lit(idx + 0.1))\
                                          .withColumn("Characteristics",lit(col_i))
 
-                #Something is wrong with Darwin so need to convert back and forth
+                # Something is wrong with Darwin so need to convert back and forth
                 df_p_values = spark.createDataFrame(df_p_values.toPandas())
 
                 df_stat = df_stat.join(df_p_values,["Index","Characteristics"],"left_outer").repartition(1)
             
-            #Add Null so can be stacked with the categorical analysis
+            # Add Null so can be stacked with the categorical analysis
             for cat_col in output_column_names:
                 df_stat = df_stat.withColumn(cat_col + "_%", lit(None))
         else:
             print("Warning: Not supported column's type {}:{}".format(col_i,c_type))
             continue
 
-        #Counter +1
+        # Counter +1
         idx = idx+1
 
-        #Add to summary list
+        # Add to summary list
         dfs_to_union.append(df_stat.select(column_order))
 
-    #Create one dataframe from list of dataframes
+    # Create one dataframe from list of dataframes
     final_df = reduce(lambda x,y: x.union(y), dfs_to_union)
-    print final_df.columns
+    #print final_df.columns
 
     # If no variable to pivot, then pivoted column will be an empty string
     final_df = final_df.withColumn("Pivoted_column", lit(col_to_strat))\
@@ -197,16 +201,16 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
     #####################
     # Beautify
     #####################
-    #Make the table presentation ready by:
-    #1. Remove "Pivoted_column" and "Variable_type". 
-    #2. Remove redundant entries in "Characteristics".
-    #3. Replace "_" in "Characteristics" with " "
-    #. Multiply percent column by 100 <-- maybe add this in
+    # Make the table presentation ready by:
+    # 1. Remove "Pivoted_column" and "Variable_type".
+    # 2. Remove redundant entries in "Characteristics".
+    # 3. Replace "_" in "Characteristics" with " "
+    # . Multiply percent column by 100 <-- maybe add this in
 
-    if beautify == True:
+    if beautify is True:
         final_df = final_df.drop("Pivoted_column","Variable_type")
 
-        #Blank out headings on non heading rows of "Characteristics" and Replace "_" in "Characteristics" with " "
+        # Blank out headings on non heading rows of "Characteristics" and Replace "_" in "Characteristics" with " "
         window = W.partitionBy("Characteristics").orderBy("Index","Values")
 
         final_df = final_df.withColumn("rank",row_number().over(window))
@@ -221,7 +225,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
          
 
 #################################################
-## Global imports and functions ##
+# Global imports and functions #
 #################################################
 from pyspark.sql import functions as F
 from pyspark.sql.functions import lit, col, when, row_number, count, min, max, avg, stddev, lower, regexp_replace, broadcast, expr
@@ -234,7 +238,6 @@ import pandas as pd
 import numpy as np
 
 from scipy import stats
-from scipy.stats import chi2_contingency
 
 
 def analysis_categorical(col_i,initial_df,col_to_strat,idx):
@@ -262,14 +265,14 @@ def analysis_categorical(col_i,initial_df,col_to_strat,idx):
     df_cat_stat = df_cat_stat.withColumn("Variable_type", lit("category"))\
                              .withColumn("Characteristics", lit(col_i))
 
-    #Add counter based on alphabetic order of col_i,
+    # Add counter based on alphabetic order of col_i,
     # EXCEPT "Yes" goes before "No"
     # "Missing" or "Unknown" or "Other" goes last
 
     window_index = W.partitionBy("Characteristics").orderBy("order","Values")
 
-    df_cat_stat = df_cat_stat.withColumn("order",when(col("Values") == "Yes", lit(1))\
-                                                .when(col("Values") == "No", lit(2))\
+    df_cat_stat = df_cat_stat.withColumn("order",when(col("Values") == "Yes", lit(1))
+                                                .when(col("Values") == "No", lit(2))
                                                 .when( (lower(col("Values")).rlike("missing|uknown|other")),5).otherwise(lit(3)))
 
     df_cat_stat = df_cat_stat.withColumn("Index", idx + row_number().over(window_index) * 0.01)\
@@ -354,8 +357,8 @@ def analysis_continuous(col_i,initial_df,col_to_strat,idx):
     ###################################################
     out_df = df_n.union(df_mean).union(df_min).union(df_max).union(df_std)
 
-    #Find number of records and add 1 so percentile_aprox finds exact values
-    #Default accuracy is 10,000 so only change value if count > 10,000
+    # Find number of records and add 1 so percentile_aprox finds exact values
+    # Default accuracy is 10,000 so only change value if count > 10,000
     ct_plus_one = initial_df.count() + 1
     if ct_plus_one < 10000:
         ct_plus_one = 10000
@@ -410,27 +413,24 @@ def p_values_continous(col_i,initial_df,col_to_strat):
         >=2 use ANOVA, otherwise print message and return nothing.
     """
 
-    #Convert to Pandas dataframe but only select relevant columns
+    # Convert to Pandas dataframe but only select relevant columns
     df_pan = initial_df.select(col_to_strat, col_i).toPandas()
 
-    #If distinct count of col_to_strat is 2 than use t-test else use ANOVA
+    # If distinct count of col_to_strat is 2 than use t-test else use ANOVA
     unique_list = df_pan[col_to_strat].unique().tolist()
-    print unique_list
+    # print unique_list
     unique_ct = len(unique_list)
 
     if unique_ct == 2:
-        #Perform t test
+        # Perform t test
         a = df_pan.loc[df_pan[col_to_strat] == unique_list[0]][col_i]
         b = df_pan.loc[df_pan[col_to_strat] == unique_list[1]][col_i]
-        print a
-        print b
         t, p_value = stats.ttest_ind(a,b)
-        print p_value
-        print t
+
         df = pd.DataFrame({"test_name":"t-test","p_value":p_value,"test_value":t},index=[0])
 
     elif unique_ct > 2:
-        #Perform ANOVA
+        # Perform ANOVA
         sample_list = [(df_pan.loc[df_pan[col_to_strat] == value][col_i]) for value in unique_list]
         
         F_value, p_value = stats.f_oneway(*sample_list)
@@ -438,7 +438,7 @@ def p_values_continous(col_i,initial_df,col_to_strat):
         df = pd.DataFrame({"test_name":"ANOVA","p_value":p_value,"test_value":F_value},index=[0])
 
     else:
-        print "Notice: <2 distinct values for {}. p value not returned".format(col_to_strat)
+        print("Notice: <2 distinct values for {}. p value not returned".format(col_to_strat))
         df = pd.DataFrame({"test_name":"NOT DONE","p_value":np.nan,"test_value":np.nan},index=[0])
 
     df_spark = spark.createDataFrame(df)
@@ -453,28 +453,29 @@ def p_values_categorical(col_i,initial_df,col_to_strat):
         >=2 use ANOVA, otherwise print message and return nothing.
     """
 
-    #Convert to Pandas dataframe but only select relevant columns
+    # Convert to Pandas dataframe but only select relevant columns
     df_pan = initial_df.select(col_to_strat, col_i).toPandas()
 
-    #If count of col_i is <5 than dont run test
+    # If count of col_i is <5 than dont run test
     col_i_ct = len(df_pan[col_i].dropna())
 
     if col_i_ct >=5:
         # Make the cross tab
         crtb = pd.crosstab(df_pan[col_i],df_pan[col_to_strat])
 
-        #Do the chi-square on the cross tab
+        # Do the chi-square on the cross tab
         chi2, p_value, dof, expected = stats.chi2_contingency(crtb)
 
         df = pd.DataFrame({"test_name":"Chi-Square","p_value":p_value,"test_value":chi2},index=[0])
 
     else:
-        print "Notice: <5 values for {}. p value not returned".format(col_i)
+        print("Notice: <5 values for {}. p value not returned".format(col_i))
         df = pd.DataFrame({"test_name":"NOT DONE","p_value":np.nan,"test_value":np.nan},index=[0])
 
     df_spark = spark.createDataFrame(df)
 
     return df_spark
+
 
 # Allow function file to be run as a script
 if __name__ == "__main__":
