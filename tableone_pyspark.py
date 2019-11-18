@@ -1,3 +1,19 @@
+#################################################
+# Global imports and functions
+#################################################
+from pyspark.sql import functions as F
+from pyspark.sql.functions import lit, col, when, row_number, count, min, max, avg, stddev, lower, regexp_replace,\
+    broadcast, expr
+from pyspark.sql.window import Window as W
+
+from operator import add
+from functools import reduce
+
+import pandas as pd
+import numpy as np
+
+from scipy import stats
+
 import sys
 
 
@@ -54,7 +70,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
     # Calculate general statistics (regardless to cols_to_analyze_list)
     #######################################################################
 
-    # Start output row order counter
+    # Start output row order counter and column order lists
     idx = 0
 
     output_column_names = ["All_Patients"]
@@ -84,7 +100,10 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
         # Get count for each stratification value
         df_all = strat_df.groupBy().pivot(col_to_strat).count()
-        
+
+        # Get rid of broadcast variable since no longer used and want to save precious memory space
+        # strat_df.destroy()
+
         # Prepare column names with "_%"
         output_column_names.extend(df_all.columns)
 
@@ -155,7 +174,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
                 # Add 2 columns for a cleaner join
                 df_p_values = df_p_values.withColumn("Index", lit(idx + 0.01))\
-                                         .withColumn("Characteristics",lit(col_i))
+                                         .withColumn("Characteristics", lit(col_i))
 
                 # Something is wrong with Darwin so need to convert back and forth
                 df_p_values = spark.createDataFrame(df_p_values.toPandas())
@@ -193,6 +212,10 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         # Add to summary list
         dfs_to_union.append(df_stat.select(column_order))
 
+        # Destroy broadcast dataframe.
+        # Not sure if this is necessary or if Spark reassigns a broadcast dataframe efficiently.
+        # initial_df.destroy()
+
     # Create one dataframe from list of dataframes
     final_df = reduce(lambda x, y: x.union(y), dfs_to_union)
 
@@ -226,22 +249,6 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
     final_df = final_df.repartition(1)
 
     return final_df
-         
-
-#################################################
-# Global imports and functions #
-#################################################
-from pyspark.sql import functions as F
-from pyspark.sql.functions import lit, col, when, row_number, count, min, max, avg, stddev, lower, regexp_replace, broadcast, expr
-from pyspark.sql.window import Window as W
-
-from operator import add
-from functools import reduce
-
-import pandas as pd
-import numpy as np
-
-from scipy import stats
 
 
 def analysis_categorical(col_i, initial_df, col_to_strat, idx):
@@ -273,7 +280,7 @@ def analysis_categorical(col_i, initial_df, col_to_strat, idx):
     # EXCEPT "Yes" goes before "No"
     # "Missing" or "Unknown" or "Other" goes last
 
-    window_index = W.partitionBy("Characteristics").orderBy("order","Values")
+    window_index = W.partitionBy("Characteristics").orderBy("order", "Values")
 
     df_cat_stat = df_cat_stat.withColumn("order", when(col("Values") == "Yes", lit(1))
                                                  .when(col("Values") == "No", lit(2))
@@ -287,7 +294,7 @@ def analysis_categorical(col_i, initial_df, col_to_strat, idx):
     return df_cat_stat
 
 
-def analysis_continuous(col_i,initial_df,col_to_strat,idx):
+def analysis_continuous(col_i, initial_df, col_to_strat, idx):
     """
     Calculate for continous col_i by col_to_strat: 
     [n, mean, std, min, max, q25, q50, q75].
@@ -371,49 +378,49 @@ def analysis_continuous(col_i,initial_df,col_to_strat,idx):
     ###########################
     # calculating 25th percentile
     ###########################
-    df_25quar = initial_groups.agg(expr('percentile_approx({}, 0.25,  {})'.format(col_i,ct_plus_one)).alias('All_Patients')).withColumn("Values", lit('25th percentile'))
+    df_25quar = initial_groups.agg(expr('percentile_approx({}, 0.25,  {})'.format(col_i, ct_plus_one)).alias('All_Patients')).withColumn("Values", lit('25th percentile'))
 
     if col_to_strat != "":
         # per pivoted column values 
         df_25quar = df_25quar.join(initial_pivoted.agg(F.expr('percentile_approx({}, 0.25,  {})'.format(col_i,ct_plus_one))).withColumn("Values", lit('25th percentile')), "Values","inner")
     
-    df_25quar = df_25quar.withColumn("Index",lit(idx + 0.6)).repartition(1)
+    df_25quar = df_25quar.withColumn("Index", lit(idx + 0.6)).repartition(1)
 
     ###########################
     # calculating 50th percentile
     ###########################
-    df_50quar = initial_groups.agg(expr('percentile_approx({}, 0.50,  {})'.format(col_i,ct_plus_one)).alias('All_Patients')).withColumn("Values", it('50th percentile'))
+    df_50quar = initial_groups.agg(expr('percentile_approx({}, 0.50,  {})'.format(col_i, ct_plus_one)).alias('All_Patients')).withColumn("Values", lit('50th percentile'))
 
     if col_to_strat != "":
         # per pivoted column values 
         df_50quar = df_50quar.join(initial_pivoted.agg(expr('percentile_approx({}, 0.50,  {})'.format(col_i,ct_plus_one))).withColumn("Values", lit('50th percentile')), "Values","inner")
     
-    df_50quar = df_50quar.withColumn("Index",lit(idx + 0.7)).repartition(1)
+    df_50quar = df_50quar.withColumn("Index", lit(idx + 0.7)).repartition(1)
 
     ###########################
     # calculating 75th percentile
     ###########################
     # per pivoted column values
-    df_75quar = initial_groups.agg(expr('percentile_approx({}, 0.75,  {})'.format(col_i,ct_plus_one)).alias('All_Patients')).withColumn("Values", lit('75th percentile'))
+    df_75quar = initial_groups.agg(expr('percentile_approx({}, 0.75,  {})'.format(col_i, ct_plus_one)).alias('All_Patients')).withColumn("Values", lit('75th percentile'))
 
     if col_to_strat != "":
         # per pivoted column values 
-        df_75quar = df_75quar.join(initial_pivoted.agg(expr('percentile_approx({}, 0.75,  {})'.format(col_i,ct_plus_one))).withColumn("Values", lit('75th percentile')), "Values","inner")
+        df_75quar = df_75quar.join(initial_pivoted.agg(expr('percentile_approx({}, 0.75,  {})'.format(col_i, ct_plus_one))).withColumn("Values", lit('75th percentile')), "Values","inner")
     
-    df_75quar = df_75quar.withColumn("Index",lit(idx + 0.8)).repartition(1)
+    df_75quar = df_75quar.withColumn("Index", lit(idx + 0.8)).repartition(1)
 
     # stack all statistics
     df = out_df.union(df_25quar).union(df_50quar).union(df_75quar)
     
     df = df.withColumn("Characteristics", lit(col_i))\
-           .withColumn("Variable_type", lit("continous"))
+           .withColumn("Variable_type", lit("continuous"))
 
     return df
 
 
-def p_values_continous(col_i,initial_df,col_to_strat):
+def p_values_continuous(col_i, initial_df, col_to_strat):
     """
-        Find the p value for the continous variable.
+        Find the p value for the continuous variable.
         If the stratified column has 2 distinct values than use t-test,
         >=2 use ANOVA, otherwise print message and return nothing.
     """
@@ -432,7 +439,7 @@ def p_values_continous(col_i,initial_df,col_to_strat):
         b = df_pan.loc[df_pan[col_to_strat] == unique_list[1]][col_i]
         t, p_value = stats.ttest_ind(a,b)
 
-        df = pd.DataFrame({"test_name":"t-test","p_value":p_value,"test_value":t},index=[0])
+        df = pd.DataFrame({"test_name": "t-test", "p_value": p_value, "test_value": t}, index=[0])
 
     elif unique_ct > 2:
         # Perform ANOVA
@@ -440,18 +447,18 @@ def p_values_continous(col_i,initial_df,col_to_strat):
         
         F_value, p_value = stats.f_oneway(*sample_list)
         
-        df = pd.DataFrame({"test_name":"ANOVA","p_value":p_value,"test_value":F_value},index=[0])
+        df = pd.DataFrame({"test_name": "ANOVA", "p_value": p_value, "test_value": F_value}, index=[0])
 
     else:
         print("Notice: <2 distinct values for {}. p value not returned".format(col_to_strat))
-        df = pd.DataFrame({"test_name":"NOT DONE","p_value":np.nan,"test_value":np.nan},index=[0])
+        df = pd.DataFrame({"test_name": "NOT DONE", "p_value": np.nan, "test_value": np.nan}, index=[0])
 
     df_spark = spark.createDataFrame(df)
 
     return df_spark
 
 
-def p_values_categorical(col_i,initial_df,col_to_strat):
+def p_values_categorical(col_i, initial_df, col_to_strat):
     """
         Find the p value for the categorical variable.
         If the stratified column has 2 distinct values than use t-test,
@@ -461,21 +468,21 @@ def p_values_categorical(col_i,initial_df,col_to_strat):
     # Convert to Pandas dataframe but only select relevant columns
     df_pan = initial_df.select(col_to_strat, col_i).toPandas()
 
-    # If count of col_i is <5 than dont run test
+    # If count of col_i is <5 than don't run test
     col_i_ct = len(df_pan[col_i].dropna())
 
     if col_i_ct >=5:
         # Make the cross tab
-        crtb = pd.crosstab(df_pan[col_i],df_pan[col_to_strat])
+        crtb = pd.crosstab(df_pan[col_i], df_pan[col_to_strat])
 
         # Do the chi-square on the cross tab
         chi2, p_value, dof, expected = stats.chi2_contingency(crtb)
 
-        df = pd.DataFrame({"test_name":"Chi-Square","p_value":p_value,"test_value":chi2},index=[0])
+        df = pd.DataFrame({"test_name": "Chi-Square", "p_value": p_value, "test_value": chi2},index=[0])
 
     else:
         print("Notice: <5 values for {}. p value not returned".format(col_i))
-        df = pd.DataFrame({"test_name":"NOT DONE","p_value":np.nan,"test_value":np.nan},index=[0])
+        df = pd.DataFrame({"test_name": "NOT DONE", "p_value": np.nan, "test_value": np.nan},index=[0])
 
     df_spark = spark.createDataFrame(df)
 
