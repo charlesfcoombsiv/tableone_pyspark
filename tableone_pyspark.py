@@ -40,56 +40,50 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
 
     """
+    # BROADCAST SHOULD BE FOR READ ONLY DATAFRAMES
 
-    # Start order counter
-    idx = 0
+    ##################################################################################
+    # Override p_value indicator if no stratification variable so doesnt mess up run.
+    ##################################################################################
 
-    # Override p_value indicator if no stratification variable so doesnt mess up run
     if col_to_strat == "" and p_values is True:
         p_values = False
         print("p_values indicator overridden to False because no stratification variable")
-
-    ########################################################################
-    # Only select columns that will be analyzed.
-    # Change col_to_strat values to be valid as column's name.
-    ########################################################################
-    if col_to_strat == "":
-        # If there is NOT a stratification variable
-        initial_df = broadcast(df.select(*cols_to_analyze_list))
-
-    else:
-        # If there is a stratification variable
-        initial_df = broadcast(df.select(col_to_strat,*cols_to_analyze_list)\
-                                 .fillna("MISSING", subset=[col_to_strat])\
-                                 .withColumn(col_to_strat, regexp_replace(col_to_strat, ' ', '_'))\
-                                 .withColumn(col_to_strat, regexp_replace(col_to_strat,r'[^\x00-\x7F]+','?')))
-
-    # Initialize list of summary dataframes of all statistics
-    dfs_to_union = []
 
     #######################################################################
     # Calculate general statistics (regardless to cols_to_analyze_list)
     #######################################################################
 
+    # Start output row order counter
+    idx = 0
+
     output_column_names = ["All_Patients"]
 
-    column_order = ["Index", "Characteristics","Variable_type","Values"]
+    column_order = ["Index", "Characteristics", "Variable_type", "Values"]
 
     if col_to_strat == "":
         # If there is NOT a stratification variable
 
-        # Find row count
-        count_all = initial_df.count()
+        # Find row count by selecting first variable to analyze and broadcasting
+        count_all = broadcast(df.select(cols_to_analyze_list[0])).count()
 
-        df_all = spark.createDataFrame(pd.DataFrame({"Characteristics":"Total", "Values":"ALL", "Variable_type":"","All_Patients":count_all,"All_Patients_%":1,"Index":idx}, index=[0]))
+        df_all = spark.createDataFrame(pd.DataFrame({"Characteristics": "Total", "Values": "ALL", "Variable_type": "",
+                                                     "All_Patients": count_all, "All_Patients_%": 1,
+                                                     "Index": idx}, index=[0]))
 
-        column_order += ["All_Patients","All_Patients_%"]
+        column_order += ["All_Patients", "All_Patients_%"]
 
     else:
         # If there is a stratification variable
 
+        # Change col_to_strat values to be valid as column's name.
+        strat_df = broadcast(df.select(col_to_strat)
+                             .fillna("MISSING", subset=[col_to_strat])
+                             .withColumn(col_to_strat, regexp_replace(col_to_strat, ' ', '_'))
+                             .withColumn(col_to_strat, regexp_replace(col_to_strat, r'[^\x00-\x7F]+','?')))
+
         # Get count for each stratification value
-        df_all = initial_df.groupBy().pivot(col_to_strat).count()
+        df_all = strat_df.groupBy().pivot(col_to_strat).count()
         
         # Prepare column names with "_%"
         output_column_names.extend(df_all.columns)
@@ -97,32 +91,32 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         output_columns_with_percent_names = []
 
         for c in output_column_names:
-            output_columns_with_percent_names += [c,c + "_%"]
+            output_columns_with_percent_names += [c, c + "_%"]
 
         column_order.extend(output_columns_with_percent_names)
 
         # Create dataframe of individual category counts, total count, and percents.
         # "add" function here was imported from operations so SQL "add" function doesnt override it
         df_all = df_all.withColumn("Characteristics", lit("Total"))\
-                       .withColumn("All_Patients",reduce(add, [col(x) for x in output_column_names if x!="All_Patients"]))\
+                       .withColumn("All_Patients",reduce(add, [col(x) for x in output_column_names if x != "All_Patients"]))\
                        .withColumn("Values", lit("ALL"))\
                        .withColumn("Variable_type", lit(None))\
                        .withColumn("Index", lit(idx))
             
         # Add 1 as 100% for each category percent
         for c in output_column_names:
-            df_all = df_all.withColumn(c + "_%",lit(1))
+            df_all = df_all.withColumn(c + "_%", lit(1))
             
         # Change column order and add columns if finding p values
         if p_values is True:
-            column_order += ["p_value","test_value","test_name"]
+            column_order += ["p_value", "test_value", "test_name"]
 
             df_all = df_all.withColumn("p_value", lit(None))\
                            .withColumn("test_name", lit(None))\
                            .withColumn("test_value",lit(None))
 
     # Add to summary list
-    dfs_to_union.append(df_all.select(column_order))
+    dfs_to_union = [df_all.select(column_order)]
 
     # Iterate index +1
     idx += 1
@@ -133,16 +127,23 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
     # Find the number of patients for "All Patients" and in each strat value (used to derive percents later)
     counts_dict = df_all.select(output_column_names).toPandas().to_dict(orient='list')
-    # print counts_dict
 
     # calculate statistics for each cols_to_analyze_list 
-    for col_i in cols_to_analyze_list: 
-        col_type = initial_df.select(col_i).dtypes[0][1]
+    for col_i in cols_to_analyze_list:
+
+        # Figure out column type
+        col_type = df.select(col_i).dtypes[0][1]
+
+        # Prepare dataframe to be analyzed
+        if col_to_strat == '':
+            initial_df = broadcast(df.select(col_i))
+        else:
+            initial_df = broadcast(df.select(col_i, col_to_strat))
 
         # conduct categorical analysis
         if col_type == 'string':
 
-            df_stat = analysis_categorical(col_i,initial_df,col_to_strat, idx)
+            df_stat = analysis_categorical(col_i, initial_df, col_to_strat, idx)
 
             # Find percent for each cols_to_analyze_list
             for cat_col in output_column_names:
@@ -150,7 +151,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
             # calculate the p value
             if p_values is True:
-                df_p_values = p_values_categorical(col_i,initial_df,col_to_strat)
+                df_p_values = p_values_categorical(col_i, initial_df, col_to_strat)
 
                 # Add 2 columns for a cleaner join
                 df_p_values = df_p_values.withColumn("Index", lit(idx + 0.01))\
@@ -159,31 +160,31 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
                 # Something is wrong with Darwin so need to convert back and forth
                 df_p_values = spark.createDataFrame(df_p_values.toPandas())
 
-                df_stat = df_stat.join(df_p_values,["Index","Characteristics"],"left_outer").repartition(1)
+                df_stat = df_stat.join(df_p_values, ["Index", "Characteristics"], "left_outer").repartition(1)
 
         # conduct continuous analysis
-        elif col_type in ['int', 'double','float','short', 'long']:
+        elif col_type in ['int', 'double', 'float', 'short', 'long']:
 
-            df_stat = analysis_continuous(col_i,initial_df,col_to_strat,idx)     
+            df_stat = analysis_continuous(col_i, initial_df, col_to_strat, idx)
 
             # calculate the p value
             if p_values is True:
                 df_p_values = p_values_continous(col_i, initial_df, col_to_strat)
 
                 # Add 2 columns for a cleaner join
-                df_p_values = df_p_values.withColumn("Index",lit(idx + 0.1))\
-                                         .withColumn("Characteristics",lit(col_i))
+                df_p_values = df_p_values.withColumn("Index", lit(idx + 0.1))\
+                                         .withColumn("Characteristics", lit(col_i))
 
                 # Something is wrong with Darwin so need to convert back and forth
                 df_p_values = spark.createDataFrame(df_p_values.toPandas())
 
-                df_stat = df_stat.join(df_p_values,["Index","Characteristics"],"left_outer").repartition(1)
+                df_stat = df_stat.join(df_p_values, ["Index", "Characteristics"], "left_outer").repartition(1)
             
             # Add Null so can be stacked with the categorical analysis
             for cat_col in output_column_names:
                 df_stat = df_stat.withColumn(cat_col + "_%", lit(None))
         else:
-            print("Warning: Not supported column's type {}:{}".format(col_i,c_type))
+            print("Warning: Not supported column's type {}:{}".format(col_i, c_type))
             continue
 
         # Counter +1
@@ -193,8 +194,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         dfs_to_union.append(df_stat.select(column_order))
 
     # Create one dataframe from list of dataframes
-    final_df = reduce(lambda x,y: x.union(y), dfs_to_union)
-    #print final_df.columns
+    final_df = reduce(lambda x, y: x.union(y), dfs_to_union)
 
     # If no variable to pivot, then pivoted column will be an empty string
     final_df = final_df.withColumn("Pivoted_column", lit(col_to_strat))\
@@ -210,14 +210,16 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
     # . Multiply percent column by 100 <-- maybe add this in
 
     if beautify is True:
-        final_df = final_df.drop("Pivoted_column","Variable_type")
+        final_df = final_df.drop("Pivoted_column", "Variable_type")
 
         # Blank out headings on non heading rows of "Characteristics" and Replace "_" in "Characteristics" with " "
-        window = W.partitionBy("Characteristics").orderBy("Index","Values")
+        window = W.partitionBy("Characteristics").orderBy("Index", "Values")
 
-        final_df = final_df.withColumn("rank",row_number().over(window))
+        final_df = final_df.withColumn("rank", row_number().over(window))
 
-        final_df = final_df.withColumn("Characteristics",when(final_df.rank==1, regexp_replace(final_df.Characteristics,"_"," ")).otherwise(lit(None)))
+        final_df = final_df.withColumn("Characteristics", when(final_df.rank == 1,
+                                                               regexp_replace(final_df.Characteristics, "_", " "))
+                                                          .otherwise(lit(None)))
 
         final_df = final_df.drop("rank")
     
@@ -242,7 +244,7 @@ import numpy as np
 from scipy import stats
 
 
-def analysis_categorical(col_i,initial_df,col_to_strat,idx):
+def analysis_categorical(col_i, initial_df, col_to_strat, idx):
     """
     Calculate count by categorical col_i by col_to_strat.
     """
@@ -251,18 +253,18 @@ def analysis_categorical(col_i,initial_df,col_to_strat,idx):
     initial_groups = initial_df.fillna("MISSING", subset=[col_i]).groupBy(col_i)
 
     # count patients by the col_i (regardless to the pivoted column)
-    df_cat_stat = initial_groups.count().withColumnRenamed("count","All_Patients")
-    df_cat_stat = df_cat_stat.withColumnRenamed(col_i,"Values")
+    df_cat_stat = initial_groups.count().withColumnRenamed("count", "All_Patients")
+    df_cat_stat = df_cat_stat.withColumnRenamed(col_i, "Values")
 
     if col_to_strat != "":
         # If there is a stratification variable
 
         # get the count of each sub-category per each sub category of col_to_strat
         df_pivot_stat = initial_groups.pivot(col_to_strat).count().fillna(0)
-        df_pivot_stat = df_pivot_stat.withColumnRenamed(col_i,"Values")
+        df_pivot_stat = df_pivot_stat.withColumnRenamed(col_i, "Values")
 
         # join all to get final result
-        df_cat_stat = df_cat_stat.join(df_pivot_stat, "Values","outer").repartition(1)
+        df_cat_stat = df_cat_stat.join(df_pivot_stat, "Values", "outer").repartition(1)
 
     df_cat_stat = df_cat_stat.withColumn("Variable_type", lit("category"))\
                              .withColumn("Characteristics", lit(col_i))
@@ -273,13 +275,14 @@ def analysis_categorical(col_i,initial_df,col_to_strat,idx):
 
     window_index = W.partitionBy("Characteristics").orderBy("order","Values")
 
-    df_cat_stat = df_cat_stat.withColumn("order",when(col("Values") == "Yes", lit(1))
-                                                .when(col("Values") == "No", lit(2))
-                                                .when( (lower(col("Values")).rlike("missing|uknown|other")),5).otherwise(lit(3)))
+    df_cat_stat = df_cat_stat.withColumn("order", when(col("Values") == "Yes", lit(1))
+                                                 .when(col("Values") == "No", lit(2))
+                                                 .when((lower(col("Values")).rlike("missing|unknown|other")), 5)
+                                                 .otherwise(lit(3)))
 
     df_cat_stat = df_cat_stat.withColumn("Index", idx + row_number().over(window_index) * 0.01)\
-           .drop("order")\
-           .repartition(1)
+                             .drop("order")\
+                             .repartition(1)
 
     return df_cat_stat
 
@@ -307,7 +310,7 @@ def analysis_continuous(col_i,initial_df,col_to_strat,idx):
         # per pivoted column values 
         df_n = df_n.join(initial_pivoted.agg({col_i:'count'}).withColumn("Values", lit('n')), "Values", "inner")
                           
-    df_n = df_n.withColumn("Index",lit(idx + 0.1)).repartition(1)
+    df_n = df_n.withColumn("Index", lit(idx + 0.1)).repartition(1)
 
     ###########################
     # calculate min
@@ -319,7 +322,7 @@ def analysis_continuous(col_i,initial_df,col_to_strat,idx):
         # per pivoted column values 
         df_min = df_min.join(initial_pivoted.agg({col_i:'min'}).withColumn("Values", lit('min')), "Values", "inner")
 
-    df_min = df_min.withColumn("Index",lit(idx + 0.2)).repartition(1)
+    df_min = df_min.withColumn("Index", lit(idx + 0.2)).repartition(1)
 
     ###########################
     # calculate max
@@ -330,7 +333,7 @@ def analysis_continuous(col_i,initial_df,col_to_strat,idx):
         # per pivoted column values 
         df_max = df_max.join(initial_pivoted.agg({col_i:'max'}).withColumn("Values", lit('max')), "Values", "inner")
 
-    df_max = df_max.withColumn("Index",lit(idx + 0.3)).repartition(1)
+    df_max = df_max.withColumn("Index", lit(idx + 0.3)).repartition(1)
 
     ###########################
     # calculate mean
@@ -341,7 +344,7 @@ def analysis_continuous(col_i,initial_df,col_to_strat,idx):
         # per pivoted column values 
         df_mean = df_mean.join(initial_pivoted.agg({col_i:'avg'}).withColumn("Values", lit('mean')), "Values", "inner")
 
-    df_mean = df_mean.withColumn("Index",lit(idx + 0.4)).repartition(1)
+    df_mean = df_mean.withColumn("Index", lit(idx + 0.4)).repartition(1)
 
     ###########################
     # calculate std
@@ -352,7 +355,7 @@ def analysis_continuous(col_i,initial_df,col_to_strat,idx):
         # per pivoted column values 
         df_std = df_std.join(initial_pivoted.agg({col_i:'stddev'}).withColumn("Values", lit('stddev')), "Values", "inner")
 
-    df_std = df_std.withColumn("Index",lit(idx + 0.5)).repartition(1)
+    df_std = df_std.withColumn("Index", lit(idx + 0.5)).repartition(1)
 
     ###################################################
     # stack n, mean, std, min, and max statistics
@@ -481,4 +484,4 @@ def p_values_categorical(col_i,initial_df,col_to_strat):
 
 # Allow function file to be run as a script
 if __name__ == "__main__":
-    tableone_pyspark(sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5])
+    tableone_pyspark(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])

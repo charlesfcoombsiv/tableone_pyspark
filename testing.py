@@ -13,3 +13,5 @@ print(my_spark)
 
 # Print the tables in the catalog
 print(my_spark.catalog.listTables())
+
+print("hey")
