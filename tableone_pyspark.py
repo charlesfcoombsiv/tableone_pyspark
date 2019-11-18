@@ -113,7 +113,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
             df_all = df_all.withColumn("p_value", lit(None))\
                            .withColumn("test_name", lit(None))\
-                           .withColumn("test_value",lit(None))
+                           .withColumn("test_value", lit(None))
 
     # Add to summary list
     dfs_to_union = [df_all.select(column_order)]
