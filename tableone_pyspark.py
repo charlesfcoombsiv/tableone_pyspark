@@ -182,7 +182,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
                 df_stat = df_stat.join(df_p_values, ["Index", "Characteristics"], "left_outer").repartition(1)
 
         # conduct continuous analysis
-        elif col_type in ['int', 'double', 'float', 'short', 'long']:
+        elif col_type in ['int', 'double', 'float', 'short', 'long', 'bigint']:
 
             df_stat = analysis_continuous(col_i, initial_df, col_to_strat, idx)
 
