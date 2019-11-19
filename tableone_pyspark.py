@@ -104,8 +104,25 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         # Get rid of broadcast variable since no longer used and want to save precious memory space
         # strat_df.destroy()
 
+        # Reorder column names from pivot count to put "Yes" before "No" and "MISSING" at the end.
+        pivot_ct_col_orig = df_all.columns
+
+        pivot_ct_col_orig.sort()
+
+        pivot_ct_col_sorted = []
+
+        for c in pivot_ct_col_orig:
+            if c in ["No", "Yes"]:
+                # Since it is sorted, "No" will appear before "Yes".
+                pivot_ct_col_sorted = [c] + pivot_ct_col_sorted
+            elif c != "MISSING":
+                pivot_ct_col_sorted.append(c)
+
+        if "MISSING" in pivot_ct_col_orig:
+            pivot_ct_col_sorted.append("MISSING")
+
         # Prepare column names with "_%"
-        output_column_names.extend(df_all.columns)
+        output_column_names.extend(pivot_ct_col_sorted)
 
         output_columns_with_percent_names = []
 
@@ -153,14 +170,15 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         # Figure out column type
         col_type = df.select(col_i).dtypes[0][1]
 
-        # Prepare dataframe to be analyzed
-        if col_to_strat == '':
-            initial_df = broadcast(df.select(col_i))
-        else:
-            initial_df = broadcast(df.select(col_i, col_to_strat))
-
         # conduct categorical analysis
         if col_type == 'string':
+
+            # Select necessary variables and broadcast dataframe to be analyzed.
+            # Fill in null values with "MISSING".
+            if col_to_strat == '':
+                initial_df = broadcast(df.select(col_i).fillna("MISSING", subset=[col_i]))
+            else:
+                initial_df = broadcast(df.select(col_i, col_to_strat).fillna("MISSING", subset=[col_i]))
 
             df_stat = analysis_categorical(col_i, initial_df, col_to_strat, idx)
 
@@ -170,32 +188,24 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
             # calculate the p value
             if p_values is True:
-                df_p_values = p_values_categorical(col_i, initial_df, col_to_strat)
-
-                # Add 2 columns for a cleaner join
-                df_p_values = df_p_values.withColumn("Index", lit(idx + 0.01))\
-                                         .withColumn("Characteristics", lit(col_i))
-
-                # Something is wrong with Darwin so need to convert back and forth
-                df_p_values = spark.createDataFrame(df_p_values.toPandas())
+                df_p_values = p_values_categorical(col_i, initial_df, col_to_strat, idx)
 
                 df_stat = df_stat.join(df_p_values, ["Index", "Characteristics"], "left_outer").repartition(1)
 
         # conduct continuous analysis
         elif col_type in ['int', 'double', 'float', 'short', 'long', 'bigint']:
 
+            # Prepare dataframe to be analyzed
+            if col_to_strat == '':
+                initial_df = broadcast(df.select(col_i))
+            else:
+                initial_df = broadcast(df.select(col_i, col_to_strat))
+
             df_stat = analysis_continuous(col_i, initial_df, col_to_strat, idx)
 
             # calculate the p value
             if p_values is True:
-                df_p_values = p_values_continous(col_i, initial_df, col_to_strat)
-
-                # Add 2 columns for a cleaner join
-                df_p_values = df_p_values.withColumn("Index", lit(idx + 0.1))\
-                                         .withColumn("Characteristics", lit(col_i))
-
-                # Something is wrong with Darwin so need to convert back and forth
-                df_p_values = spark.createDataFrame(df_p_values.toPandas())
+                df_p_values = p_values_continuous(col_i, initial_df, col_to_strat, idx)
 
                 df_stat = df_stat.join(df_p_values, ["Index", "Characteristics"], "left_outer").repartition(1)
             
@@ -229,7 +239,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
     # Make the table presentation ready by:
     # 1. Remove "Pivoted_column" and "Variable_type".
     # 2. Remove redundant entries in "Characteristics".
-    # 3. Replace "_" in "Characteristics" with " "
+    # 3. Replace "_" in "Characteristics" with " ".
     # . Multiply percent column by 100 <-- maybe add this in
 
     if beautify is True:
@@ -256,8 +266,7 @@ def analysis_categorical(col_i, initial_df, col_to_strat, idx):
     Calculate count by categorical col_i by col_to_strat.
     """
 
-    # if exist null values in col_i change it to string "MISSING"
-    initial_groups = initial_df.fillna("MISSING", subset=[col_i]).groupBy(col_i)
+    initial_groups = initial_df.groupBy(col_i)
 
     # count patients by the col_i (regardless to the pivoted column)
     df_cat_stat = initial_groups.count().withColumnRenamed("count", "All_Patients")
@@ -278,12 +287,13 @@ def analysis_categorical(col_i, initial_df, col_to_strat, idx):
 
     # Add counter based on alphabetic order of col_i,
     # EXCEPT "Yes" goes before "No"
-    # "Missing" or "Unknown" or "Other" goes last
+    # "Missing" or "Unknown" or "Other" goes last but before null filled "MISSING".
 
     window_index = W.partitionBy("Characteristics").orderBy("order", "Values")
 
     df_cat_stat = df_cat_stat.withColumn("order", when(col("Values") == "Yes", lit(1))
                                                  .when(col("Values") == "No", lit(2))
+                                                 .when(col("Values") == "MISSING", lit(6))
                                                  .when((lower(col("Values")).rlike("missing|unknown|other")), 5)
                                                  .otherwise(lit(3)))
 
@@ -301,8 +311,9 @@ def analysis_continuous(col_i, initial_df, col_to_strat, idx):
 
     Create idx here so that can create proper order for each stat.
     """
-    
-    initial_groups = initial_df.groupBy()
+
+    # Do i need to re-pivot because of the groupBy() ?
+    initial_groups = initial_df.select(col_i).groupBy()
 
     if col_to_strat != "":
         initial_pivoted = initial_df.groupBy().pivot(col_to_strat)
@@ -418,15 +429,15 @@ def analysis_continuous(col_i, initial_df, col_to_strat, idx):
     return df
 
 
-def p_values_continuous(col_i, initial_df, col_to_strat):
+def p_values_continuous(col_i, initial_df, col_to_strat, idx):
     """
         Find the p value for the continuous variable.
         If the stratified column has 2 distinct values than use t-test,
         >=2 use ANOVA, otherwise print message and return nothing.
     """
 
-    # Convert to Pandas dataframe but only select relevant columns
-    df_pan = initial_df.select(col_to_strat, col_i).toPandas()
+    # Convert to Pandas dataframe. Relevant columns have already been selected.
+    df_pan = initial_df.toPandas()
 
     # If distinct count of col_to_strat is 2 than use t-test else use ANOVA
     unique_list = df_pan[col_to_strat].unique().tolist()
@@ -455,36 +466,54 @@ def p_values_continuous(col_i, initial_df, col_to_strat):
 
     df_spark = spark.createDataFrame(df)
 
+    # Add 2 columns for a cleaner join.
+    # Continuous uses a different idx numbering than categorical.
+    df_spark = df_spark.withColumn("Index", lit(idx + 0.1))\
+                       .withColumn("Characteristics", lit(col_i))
+
+    # Something is wrong with Darwin so need to convert back and forth
+    df_spark = spark.createDataFrame(df_spark.toPandas())
+
     return df_spark
 
 
-def p_values_categorical(col_i, initial_df, col_to_strat):
+def p_values_categorical(col_i, initial_df, col_to_strat, idx):
     """
         Find the p value for the categorical variable.
         If the stratified column has 2 distinct values than use t-test,
         >=2 use ANOVA, otherwise print message and return nothing.
     """
 
-    # Convert to Pandas dataframe but only select relevant columns
-    df_pan = initial_df.select(col_to_strat, col_i).toPandas()
+    # Convert to Pandas dataframe. Relevant columns are already selected.
+    # Null values have been replaced with "MISSING" so remove them.
+    df_pan = initial_df.filter(col(col_i) != "MISSING").toPandas()
 
     # If count of col_i is <5 than don't run test
     col_i_ct = len(df_pan[col_i].dropna())
 
-    if col_i_ct >=5:
+    if col_i_ct >= 5:
         # Make the cross tab
         crtb = pd.crosstab(df_pan[col_i], df_pan[col_to_strat])
 
         # Do the chi-square on the cross tab
         chi2, p_value, dof, expected = stats.chi2_contingency(crtb)
 
-        df = pd.DataFrame({"test_name": "Chi-Square", "p_value": p_value, "test_value": chi2},index=[0])
+        df = pd.DataFrame({"test_name": "Chi-Square", "p_value": p_value, "test_value": chi2}, index=[0])
 
     else:
         print("Notice: <5 values for {}. p value not returned".format(col_i))
-        df = pd.DataFrame({"test_name": "NOT DONE", "p_value": np.nan, "test_value": np.nan},index=[0])
+        df = pd.DataFrame({"test_name": "NOT DONE", "p_value": np.nan, "test_value": np.nan}, index=[0])
 
+    print(df)
     df_spark = spark.createDataFrame(df)
+
+    # Add 2 columns for a cleaner join.
+    # Categorical uses a different idx numbering than continuous.
+    df_spark = df_spark.withColumn("Index", lit(idx + 0.01))\
+                       .withColumn("Characteristics", lit(col_i))
+
+    # Something is wrong with Darwin so need to convert back and forth
+    df_spark = spark.createDataFrame(df_spark.toPandas())
 
     return df_spark
 
