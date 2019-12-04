@@ -30,30 +30,21 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
             cols_to_analyze_list: (list of strings) Names of the columns to analyze.
 
-            beautify: (string: 'Yes', ' No') Make the table presentation ready by:
+            beautify: (Boolean: True, False) Make the table presentation ready by:
                       Removing "Pivoted_column" and "Category_type"
                       Removing redundant entries in "Characteristics"
                       Replacing "_" in "Characteristics" with " ".
 
-            p_values: (string: 'Yes', ' No') Return p values and test statistics for stratified analysis
+            p_values: (Boolean: True, False) Return p values and test statistics for stratified analysis
                       For continuous variables with 2 distinct stratification values, t-test returns t statistics.
                       For continuous variables with >2 distinct stratification values, ANOVA returns F-value.
                       For categorical variables with >5 values, Chi-Squared returns Chi-square.
 
     Returns:
-            final_df: (dataframe) Summary dataframe of the p values and test statistics for all the columns analyzed.
+            final_df: (dataframe) Summary dataframe of the counts, percents, quartiles, p values, and test statistics
+                                    for all the columns analyzed.
 
     Author: Charles Coombs - 2019/08/15
-
-    Update History:
-            2019-11-12 - Charles
-                Broadcast initial_df to speed up analysis.
-                Imported function from SQL library individually so don't need "F." notation.
-                Repartitioned to 1 after any joins or aggregates (".agg()").
-
-            2019-11-14 - Charles
-                Changed Yes/No for p_values and beautify to True/False
-
 
     """
     # BROADCAST SHOULD BE FOR READ ONLY DATAFRAMES
@@ -83,7 +74,8 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         # Find row count by selecting first variable to analyze and broadcasting
         count_all = broadcast(df.select(cols_to_analyze_list[0])).count()
 
-        df_all = spark.createDataFrame(pd.DataFrame({"Characteristics": "Total", "Values": "ALL", "Variable_type": "",
+        df_all = spark.createDataFrame(pd.DataFrame({"Characteristics": "Total", "Values": "ALL",
+                                                     "Variable_type": np.nan,
                                                      "All_Patients": count_all, "All_Patients_%": 1,
                                                      "Index": idx}, index=[0]))
 
@@ -399,8 +391,7 @@ def analysis_continuous(col_i, initial_df, col_to_strat, idx):
     ###########################
     df_25quar = initial_groups.agg(
         expr('percentile_approx({}, 0.25,  {})'.format(col_i, ct_plus_one)).alias('All_Patients')).withColumn("Values",
-                                                                                                              lit(
-                                                                                                                  '25th percentile'))
+                                                                                            lit('25th percentile'))
 
     if col_to_strat != "":
         # per pivoted column values
@@ -415,8 +406,7 @@ def analysis_continuous(col_i, initial_df, col_to_strat, idx):
     ###########################
     df_50quar = initial_groups.agg(
         expr('percentile_approx({}, 0.50,  {})'.format(col_i, ct_plus_one)).alias('All_Patients')).withColumn("Values",
-                                                                                                              lit(
-                                                                                                                  '50th percentile'))
+                                                                                            lit('50th percentile'))
 
     if col_to_strat != "":
         # per pivoted column values
@@ -432,8 +422,7 @@ def analysis_continuous(col_i, initial_df, col_to_strat, idx):
     # per pivoted column values
     df_75quar = initial_groups.agg(
         expr('percentile_approx({}, 0.75,  {})'.format(col_i, ct_plus_one)).alias('All_Patients')).withColumn("Values",
-                                                                                                              lit(
-                                                                                                                  '75th percentile'))
+                                                                                            lit('75th percentile'))
 
     if col_to_strat != "":
         # per pivoted column values
