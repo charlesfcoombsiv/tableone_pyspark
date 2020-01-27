@@ -17,7 +17,7 @@ from scipy import stats
 import sys
 
 
-def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=False, p_values=False):
+def tableone_pyspark(df, spark_session, col_to_strat="", cols_to_analyze_list=[], beautify=False, p_values=False):
     """
     tableone
     tableone creates the “Table 1” summary statistics for a patient population.
@@ -40,6 +40,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
                       For continuous variables with >2 distinct stratification values, ANOVA returns F-value.
                       For categorical variables with >5 values, Chi-Squared returns Chi-square.
 
+            spark_session: (Spark session object) Name of the spark session object.
     Returns:
             final_df: (dataframe) Summary dataframe of the counts, percents, quartiles, p values, and test statistics
                                     for all the columns analyzed.
@@ -74,7 +75,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
         # Find row count by selecting first variable to analyze and broadcasting
         count_all = broadcast(df.select(cols_to_analyze_list[0])).count()
 
-        df_all = spark.createDataFrame(pd.DataFrame({"Characteristics": "Total", "Values": "ALL",
+        df_all = spark_session.createDataFrame(pd.DataFrame({"Characteristics": "Total", "Values": "ALL",
                                                      "Variable_type": np.nan,
                                                      "All_Patients": count_all, "All_Patients_%": 1,
                                                      "Index": idx}, index=[0]))
@@ -187,7 +188,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
             # calculate the p value
             if p_values is True:
-                df_p_values = p_values_categorical(col_i, initial_df, col_to_strat, idx)
+                df_p_values = p_values_categorical(col_i, initial_df, col_to_strat, idx, spark_session)
 
                 df_stat = df_stat.join(df_p_values, ["Index", "Characteristics"], "left_outer").repartition(1)
 
@@ -204,7 +205,7 @@ def tableone_pyspark(df, col_to_strat="", cols_to_analyze_list=[], beautify=Fals
 
             # calculate the p value
             if p_values is True:
-                df_p_values = p_values_continuous(col_i, initial_df, col_to_strat, idx)
+                df_p_values = p_values_continuous(col_i, initial_df, col_to_strat, idx, spark_session)
 
                 df_stat = df_stat.join(df_p_values, ["Index", "Characteristics"], "left_outer").repartition(1)
 
@@ -441,7 +442,7 @@ def analysis_continuous(col_i, initial_df, col_to_strat, idx):
     return df
 
 
-def p_values_continuous(col_i, initial_df, col_to_strat, idx):
+def p_values_continuous(col_i, initial_df, col_to_strat, idx, spark_session):
     """
         Find the p value for the continuous variable.
         If the stratified column has 2 distinct values than use t-test,
@@ -453,7 +454,6 @@ def p_values_continuous(col_i, initial_df, col_to_strat, idx):
 
     # If distinct count of col_to_strat is 2 than use t-test else use ANOVA
     unique_list = df_pan[col_to_strat].unique().tolist()
-    # print unique_list
     unique_ct = len(unique_list)
 
     if unique_ct == 2:
@@ -476,7 +476,7 @@ def p_values_continuous(col_i, initial_df, col_to_strat, idx):
         print("Notice: <2 distinct values for {}. p value not returned".format(col_to_strat))
         df = pd.DataFrame({"test_name": "NOT DONE", "p_value": np.nan, "test_value": np.nan}, index=[0])
 
-    df_spark = spark.createDataFrame(df)
+    df_spark = spark_session.createDataFrame(df)
 
     # Add 2 columns for a cleaner join.
     # Continuous uses a different idx numbering than categorical.
@@ -484,16 +484,15 @@ def p_values_continuous(col_i, initial_df, col_to_strat, idx):
         .withColumn("Characteristics", lit(col_i))
 
     # Something is wrong with Darwin so need to convert back and forth
-    df_spark = spark.createDataFrame(df_spark.toPandas())
+    df_spark = spark_session.createDataFrame(df_spark.toPandas())
 
     return df_spark
 
 
-def p_values_categorical(col_i, initial_df, col_to_strat, idx):
+def p_values_categorical(col_i, initial_df, col_to_strat, idx, spark_session):
     """
         Find the p value for the categorical variable.
-        If the stratified column has 2 distinct values than use t-test,
-        >=2 use ANOVA, otherwise print message and return nothing.
+        If more than 5 values, do chi-square, else do nothing.
     """
 
     # Convert to Pandas dataframe. Relevant columns are already selected.
@@ -516,8 +515,7 @@ def p_values_categorical(col_i, initial_df, col_to_strat, idx):
         print("Notice: <5 values for {}. p value not returned".format(col_i))
         df = pd.DataFrame({"test_name": "NOT DONE", "p_value": np.nan, "test_value": np.nan}, index=[0])
 
-    print(df)
-    df_spark = spark.createDataFrame(df)
+    df_spark = spark_session.createDataFrame(df)
 
     # Add 2 columns for a cleaner join.
     # Categorical uses a different idx numbering than continuous.
@@ -525,7 +523,7 @@ def p_values_categorical(col_i, initial_df, col_to_strat, idx):
         .withColumn("Characteristics", lit(col_i))
 
     # Something is wrong with Darwin so need to convert back and forth
-    df_spark = spark.createDataFrame(df_spark.toPandas())
+    df_spark = spark_session.createDataFrame(df_spark.toPandas())
 
     return df_spark
 
